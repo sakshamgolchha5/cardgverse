@@ -1,0 +1,51 @@
+# Builds the Android app in the cloud (free for public repositories; private repositories get a monthly free allowance).
+# Run it from GitHub -> Actions -> "Android build" -> Run workflow.  Download the files from the finished run (Artifacts).
+# Optional secrets for a SIGNED release bundle: ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD
+name: Android build
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: 21 }
+      - uses: android-actions/setup-android@v3
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - run: npx cap sync android
+      - name: Debug APK (installable on a phone for testing)
+        working-directory: android
+        run: chmod +x gradlew && ./gradlew assembleDebug --no-daemon
+      - name: Release bundle (.aab) - signed when the secrets exist
+        working-directory: android
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -n "$KS_B64" ]; then
+            echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/upload.keystore"
+            ./gradlew bundleRelease --no-daemon \
+              -Pandroid.injected.signing.store.file="$RUNNER_TEMP/upload.keystore" \
+              -Pandroid.injected.signing.store.password="$KS_PASS" \
+              -Pandroid.injected.signing.key.alias="$KEY_ALIAS" \
+              -Pandroid.injected.signing.key.password="$KEY_PASS"
+          else
+            echo "No signing secrets: building an UNSIGNED bundle (sign it in Android Studio or add the secrets)."
+            ./gradlew bundleRelease --no-daemon
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: card-club-arcade-android
+          path: |
+            android/app/build/outputs/apk/debug/*.apk
+            android/app/build/outputs/bundle/release/*.aab
